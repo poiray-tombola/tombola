@@ -280,49 +280,6 @@ main { width: min(380px, 100%); }
   text-transform: uppercase;
 }
 
-.lot-nom { display: block; }
-
-.lot-stock {
-  display: inline-block;
-  margin-top: 8px;
-  padding: 3px 8px;
-  border-radius: 20px;
-  background: rgba(251, 244, 234, .14);
-  font-size: .62rem;
-  font-weight: 500;
-  letter-spacing: .04em;
-  text-transform: none;
-  color: var(--or-clair);
-}
-.lot-stock.epuise {
-  background: rgba(60, 20, 8, .35);
-  color: rgba(251, 244, 234, .7);
-  text-decoration: line-through;
-}
-
-.compteur {
-  text-align: center;
-  font-size: .78rem;
-  letter-spacing: .04em;
-  opacity: .85;
-  margin: -6px 0 14px;
-  min-height: 1em;
-}
-
-.chargement {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(135deg, #a8863f, #ecd8a0 45%, #c9a85c);
-  color: #5c4114;
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 1.2rem;
-  z-index: 2;
-}
-
 .lot svg {
   width: 42px;
   height: 42px;
@@ -378,7 +335,6 @@ main { width: min(380px, 100%); }
       <div class="zone">
         <div class="grille" id="grille"></div>
         <canvas id="couche"></canvas>
-        <div class="chargement" id="chargement">Préparation de votre ticket…</div>
       </div>
 
       <div class="perfo"></div>
@@ -394,36 +350,13 @@ main { width: min(380px, 100%); }
 
     <section class="lots">
       <h2>Les lots à gagner</h2>
-      <p class="compteur" id="compteur"></p>
       <div class="lots-liste" id="lots-liste"></div>
     </section>
   </main>
 
   <footer class="footer">Un ticket par personne · Lots remis en boutique dans la limite des stocks</footer>
 
-  <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {
-  getFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction, serverTimestamp, increment,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-
-/* =========================================================
-   FIREBASE (base de données du compteur de lots)
-   La clé ci-dessous est publique par nature : la sécurité
-   est assurée par les règles Firestore.
-   ========================================================= */
-const db = getFirestore(initializeApp({
-  apiKey: "AIzaSyCAh_2b_FKCNM43QArQQIV6agOcwZE6c_U",
-  authDomain: "poiray-tombola.firebaseapp.com",
-  projectId: "poiray-tombola",
-  storageBucket: "poiray-tombola.firebasestorage.app",
-  messagingSenderId: "123307985328",
-  appId: "1:123307985328:web:760c9b1ae6f291bbe1ae75",
-}));
-
-/* Nombre d'exemplaires de chaque lot au départ */
-const STOCK_INITIAL = { bougie: 3, porteCle: 3, porteSac: 3 };
-
+  <script>
 /* =========================================================
    RÉGLAGES : chances de gagner chaque lot (en %)
    ========================================================= */
@@ -478,7 +411,7 @@ const DESSINS = {
 
 const LOTS = ["bougie", "porteCle", "porteSac"];
 const TOUS = Object.keys(DESSINS);
-const CLE = "tombola-ticket-v2";
+const CLE = "tombola-ticket-v1";
 
 /* ---------- Sauvegarde (1 ticket par téléphone) ---------- */
 const memoire = {
@@ -530,97 +463,19 @@ function genererCode() {
   return s.slice(0, 3) + "-" + s.slice(3);
 }
 
-/* ---------- Base de données ---------- */
-function avecDelai(promesse, ms, valeurSiTropLong) {
-  return Promise.race([promesse, new Promise(r => setTimeout(() => r(valeurSiTropLong), ms))]);
-}
-
-// Crée les compteurs de stock s'ils n'existent pas encore
-async function initialiserStock() {
-  for (const lot of LOTS) {
-    const ref = doc(db, "stock", lot);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      const n = STOCK_INITIAL[lot];
-      await setDoc(ref, { total: n, restants: n }).catch(() => {});
-    }
-  }
-}
-
-// Retire 1 exemplaire du lot s'il en reste, et enregistre le code gagnant
-function reserverLot(lot, code) {
-  return runTransaction(db, async tx => {
-    const ref = doc(db, "stock", lot);
-    const snap = await tx.get(ref);
-    if (!snap.exists() || snap.data().restants <= 0) return false;
-    tx.update(ref, { restants: snap.data().restants - 1 });
-    tx.set(doc(db, "gagnants", code), { lot, date: serverTimestamp() });
-    return true;
-  });
-}
-
-async function creerTicket() {
-  const code = genererCode();
-  let lot = tirerLot();
-  if (lot) {
-    // Si la base ne répond pas ou si le lot est épuisé : ticket perdant
-    const ok = await avecDelai(reserverLot(lot, code).catch(() => false), 8000, false);
-    if (!ok) lot = null;
-  }
-  setDoc(doc(db, "stats", "parties"), { total: increment(1) }, { merge: true }).catch(() => {});
-  return {
+/* ---------- Ticket ---------- */
+let ticket = memoire.lire();
+if (!ticket) {
+  const lot = tirerLot();
+  ticket = {
     lot,
     cases: construireGrille(lot),
-    code,
+    code: genererCode(),
     numero: String(Math.floor(1000 + Math.random() * 9000)),
     gratte: false,
   };
-}
-
-/* ---------- Compteur affiché sur le site ---------- */
-const stockActuel = {};
-let partiesJouees = null;
-
-function afficherCompteur() {
-  for (const lot of LOTS) {
-    const el = document.querySelector(`[data-stock="${lot}"]`);
-    const st = stockActuel[lot];
-    if (!el || !st) continue;
-    el.textContent = st.restants > 0 ? `${st.restants} / ${st.total} restant${st.restants > 1 ? "s" : ""}` : "Épuisé";
-    el.classList.toggle("epuise", st.restants <= 0);
-  }
-  const gagnes = LOTS.reduce((n, l) => n + (stockActuel[l] ? stockActuel[l].total - stockActuel[l].restants : 0), 0);
-  const parts = [];
-  if (partiesJouees !== null) parts.push(`${partiesJouees} ticket${partiesJouees > 1 ? "s" : ""} joué${partiesJouees > 1 ? "s" : ""}`);
-  if (Object.keys(stockActuel).length) parts.push(`${gagnes} lot${gagnes > 1 ? "s" : ""} gagné${gagnes > 1 ? "s" : ""}`);
-  document.getElementById("compteur").textContent = parts.join(" · ");
-}
-
-function ecouterCompteur() {
-  for (const lot of LOTS) {
-    onSnapshot(doc(db, "stock", lot), snap => {
-      if (snap.exists()) { stockActuel[lot] = snap.data(); afficherCompteur(); }
-    }, () => {});
-  }
-  onSnapshot(doc(db, "stats", "parties"), snap => {
-    if (snap.exists()) { partiesJouees = snap.data().total; afficherCompteur(); }
-  }, () => {});
-}
-
-/* ---------- Ticket ---------- */
-document.getElementById("lots-liste").innerHTML = LOTS
-  .map(l => `<div class="lot">${DESSINS[l].svg}<span class="lot-nom">${DESSINS[l].nom}</span><span class="lot-stock" data-stock="${l}">…</span></div>`)
-  .join("");
-
-await avecDelai(initialiserStock().catch(() => {}), 6000, null);
-ecouterCompteur();
-
-let ticket = memoire.lire();
-if (!ticket) {
-  ticket = await creerTicket();
   memoire.ecrire(ticket);
 }
-document.getElementById("chargement").remove();
 
 /* ---------- Affichage ---------- */
 document.getElementById("numero").textContent = "N° " + ticket.numero;
@@ -628,6 +483,10 @@ document.getElementById("numero").textContent = "N° " + ticket.numero;
 const grille = document.getElementById("grille");
 grille.innerHTML = ticket.cases
   .map(d => `<div class="case" data-dessin="${d}">${DESSINS[d].svg}</div>`)
+  .join("");
+
+document.getElementById("lots-liste").innerHTML = LOTS
+  .map(l => `<div class="lot">${DESSINS[l].svg}${DESSINS[l].nom}</div>`)
   .join("");
 
 function afficherResultat(animation) {
